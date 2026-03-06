@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { db, auth } from '../firebase';
-import { collection, addDoc, onSnapshot, doc, updateDoc, query, orderBy, deleteDoc } from 'firebase/firestore';
+import { collection, addDoc, onSnapshot, doc, updateDoc, query, orderBy, deleteDoc, where, getDocs } from 'firebase/firestore';
 import { onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
 
 const AppContext = createContext();
@@ -119,7 +119,6 @@ export const AppProvider = ({ children }) => {
 
   const addTransaction = async (transactionData) => {
     try {
-      // 1. Add Transaction
       const newTx = {
         ...transactionData,
         date: transactionData.date || new Date().toISOString(),
@@ -127,51 +126,24 @@ export const AppProvider = ({ children }) => {
       };
       await addDoc(collection(db, "transactions"), newTx);
 
-      // 2. Update Customer Balance
-      const customer = customers.find(c => c.customerId === transactionData.customerId);
-      if (customer) {
-        let change = newTx.amount;
-        if (newTx.type === 'DEBIT') {
-          change = -change; // Payment received, balance decreases
-        }
-
-        const customerRef = doc(db, "customers", transactionData.customerId);
-        await updateDoc(customerRef, {
-          currentBalance: (customer.currentBalance || 0) + change
-        });
-      }
+      // 2. Sync Customer Balance (Full Recalculation for accuracy)
+      await syncCustomerBalance(transactionData.customerId);
     } catch (e) {
       console.error("Error adding transaction: ", e);
       alert("Error saving transaction: " + e.message);
     }
   };
 
-  // Update Transaction (Note: Updating a transaction's amount/type would require re-calculating customer balance)
   const updateTransaction = async (transactionId, customerId, oldAmount, oldType, newTransactionData) => {
     try {
       const transactionRef = doc(db, "transactions", transactionId);
-      await updateDoc(transactionRef, newTransactionData);
+      await updateDoc(transactionRef, {
+        ...newTransactionData,
+        amount: parseFloat(newTransactionData.amount)
+      });
 
-      // Re-calculate customer balance if amount or type changed
-      const customer = customers.find(c => c.customerId === customerId);
-      if (customer) {
-        let oldChange = oldAmount;
-        if (oldType === 'DEBIT') {
-          oldChange = -oldChange;
-        }
-
-        let newChange = parseFloat(newTransactionData.amount);
-        if (newTransactionData.type === 'DEBIT') {
-          newChange = -newChange;
-        }
-
-        const balanceAdjustment = newChange - oldChange;
-
-        const customerRef = doc(db, "customers", customerId);
-        await updateDoc(customerRef, {
-          currentBalance: (customer.currentBalance || 0) + balanceAdjustment
-        });
-      }
+      // Re-calculate customer balance
+      await syncCustomerBalance(customerId);
     } catch (e) {
       console.error("Error updating transaction: ", e);
       alert("Error updating transaction: " + e.message);
@@ -183,21 +155,38 @@ export const AppProvider = ({ children }) => {
     try {
       await deleteDoc(doc(db, "transactions", transactionId));
 
-      // Revert balance
-      const customer = customers.find(c => c.customerId === customerId);
-      if (customer) {
-        let reverseChange = -amount; // If it was Credit (+), we subtract.
-        if (type === 'DEBIT') {
-          reverseChange = amount; // If it was Debit (-), we add back.
-        }
-
-        const customerRef = doc(db, "customers", customerId);
-        await updateDoc(customerRef, {
-          currentBalance: (customer.currentBalance || 0) + reverseChange
-        });
-      }
+      // Sync customer balance
+      await syncCustomerBalance(customerId);
     } catch (e) {
       console.error("Error deleting transaction", e);
+    }
+  };
+
+  /**
+   * Recalculates the customer's balance by summing all their transactions.
+   * This is the "Source of Truth" fix for the sync issue.
+   */
+  const syncCustomerBalance = async (customerId) => {
+    try {
+      const txQuery = query(collection(db, "transactions"), where("customerId", "==", customerId));
+      const txSnapshot = await getDocs(txQuery);
+
+      const transactions = txSnapshot.docs.map(doc => doc.data());
+
+      const totalBalance = transactions.reduce((acc, tx) => {
+        const amt = parseFloat(tx.amount || 0);
+        // CREDIT (Goods Given/Service) = Outstanding Increases
+        // DEBIT (Payment Received/Advance) = Outstanding Decreases
+        return tx.type === 'CREDIT' ? acc + amt : acc - amt;
+      }, 0);
+
+      const customerRef = doc(db, "customers", customerId);
+      await updateDoc(customerRef, {
+        currentBalance: totalBalance
+      });
+      console.log(`Synced balance for ${customerId}: ${totalBalance}`);
+    } catch (e) {
+      console.error("Error syncing customer balance:", e);
     }
   };
 

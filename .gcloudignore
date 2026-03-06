@@ -1,0 +1,18 @@
+.git
+.gitignore
+node_modules/
+dist/
+Dockerfile
+.env
+.firebaserc
+firebase.json
+README.md
+eslint.config.js
+vite.config.js
+package-lock.json
+# Allow source and package.json for build
+!package.json
+!src/
+!public/
+!index.html
+!Dockerfile

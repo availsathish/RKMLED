@@ -6,7 +6,7 @@ import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
 
 const Reports = () => {
-    const { customers, loading } = useApp();
+    const { customers, transactions, loading } = useApp();
     const [filter, setFilter] = useState('ALL'); // ALL, RECEIVABLE, PAYABLE
 
     // Derived State
@@ -14,11 +14,8 @@ const Reports = () => {
         return customers.filter(c => {
             if (filter === 'RECEIVABLE') return c.currentBalance > 0;
             if (filter === 'PAYABLE') return c.currentBalance < 0;
-            // For ALL, we generally only care about non-zero balances for reports, but let's show all or just non-zero?
-            // Usually reports exclude zero balance.
             return c.currentBalance !== 0;
         }).sort((a, b) => {
-            // Sort by absolute balance descending
             return Math.abs(b.currentBalance) - Math.abs(a.currentBalance);
         });
     }, [customers, filter]);
@@ -40,22 +37,52 @@ const Reports = () => {
 
         doc.setFontSize(18);
         doc.setTextColor(79, 70, 229);
-        doc.text("RKM Loom Spares - Outstanding Report", 14, 20);
+        doc.text("RKM Loom Spares - Transaction Report", 14, 20);
 
         doc.setFontSize(10);
         doc.setTextColor(100);
         doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 26);
 
-        const tableColumn = ["Customer Name", "City", "Phone", "Balance (Rs)"];
+        // Standard accounting report columns as requested
+        const tableColumn = ["Date", "Customer", "Description", "Debit", "Credit", "Balance"];
         const tableRows = [];
 
-        filteredCustomers.forEach(c => {
-            const balance = c.currentBalance;
-            const balanceStr = balance > 0 ? `${balance} Dr` : `${Math.abs(balance)} Cr`;
+        // We want a global transaction log, sorted by date
+        const sortedTransactions = [...transactions].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        // Track running balances per customer if we want a global balance column? 
+        // Or just a global running balance of all receivables?
+        // Let's go with a global running balance of net flow for this report.
+        let runningBalance = 0;
+
+        sortedTransactions.forEach(t => {
+            const customer = customers.find(c => c.customerId === t.customerId);
+            const date = new Date(t.date).toLocaleDateString() || '-';
+            const customerName = customer ? customer.name : 'Unknown';
+            const desc = t.description || '-';
+            const amount = Number(t.amount);
+
+            let debit = '';
+            let credit = '';
+
+            if (t.type === 'CREDIT') {
+                debit = amount.toLocaleString();
+                runningBalance += amount;
+            } else {
+                credit = amount.toLocaleString();
+                runningBalance -= amount;
+            }
+
+            const balanceStr = runningBalance >= 0 ?
+                `${runningBalance.toLocaleString()} Dr` :
+                `${Math.abs(runningBalance).toLocaleString()} Cr`;
+
             tableRows.push([
-                c.name,
-                c.address || '-',
-                c.phone || '-',
+                date,
+                customerName,
+                desc,
+                debit,
+                credit,
                 balanceStr
             ]);
         });
@@ -67,11 +94,14 @@ const Reports = () => {
             theme: 'grid',
             headStyles: { fillColor: [79, 70, 229] },
             columnStyles: {
-                3: { halign: 'right', fontStyle: 'bold' }
-            }
+                3: { halign: 'right' }, // Debit
+                4: { halign: 'right' }, // Credit
+                5: { halign: 'right', fontStyle: 'bold' } // Balance
+            },
+            styles: { fontSize: 8 }
         });
 
-        doc.save('RKM_Outstanding_Report.pdf');
+        doc.save('RKM_Transaction_Report.pdf');
     };
 
     const handleDownloadExcel = () => {

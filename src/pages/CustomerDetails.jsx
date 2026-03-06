@@ -9,14 +9,16 @@ import autoTable from 'jspdf-autotable';
 const CustomerDetails = () => {
     const { id } = useParams();
     const navigate = useNavigate();
-    const { getCustomer, getCustomerTransactions, addTransaction, deleteTransaction, updateCustomer } = useApp();
+    const { getCustomer, getCustomerTransactions, addTransaction, deleteTransaction, updateCustomer, updateTransaction } = useApp();
 
     const customer = getCustomer(id);
     const transactions = getCustomerTransactions(id);
 
     const [showTxModal, setShowTxModal] = useState(false);
     const [showEditModal, setShowEditModal] = useState(false);
+    const [showEditTxModal, setShowEditTxModal] = useState(false);
     const [editData, setEditData] = useState({});
+    const [editingTx, setEditingTx] = useState(null);
     const [txType, setTxType] = useState('CREDIT'); // CREDIT or DEBIT
     const [newTx, setNewTx] = useState({ amount: '', description: '', date: new Date().toISOString().split('T')[0], imageUrl: '' });
 
@@ -117,18 +119,39 @@ const CustomerDetails = () => {
             doc.text(`Statement Date: ${new Date().toLocaleDateString()}`, 195, 60, null, null, "right");
 
             // Table of Transactions
-            const tableColumn = ["Date", "Description", "Debit (-)", "Credit (+)"];
+            const tableColumn = ["Date", "Description", "Debit", "Credit", "Balance"];
             const tableRows = [];
+            let runningBalance = 0;
 
-            // Sort transactions by date ascending for the report (Create copy to avoid mutating state)
+            // Sort transactions by date ascending for the report
             const reportTransactions = [...transactions].sort((a, b) => new Date(a.date) - new Date(b.date));
 
             reportTransactions.forEach(t => {
                 const date = new Date(t.date).toLocaleDateString() || '-';
                 const desc = t.description || '-';
-                const debit = t.type === 'DEBIT' ? `-${t.amount}` : '';
-                const credit = t.type === 'CREDIT' ? `+${t.amount}` : '';
-                tableRows.push([date, desc, debit, credit]);
+                const amount = Number(t.amount);
+
+                // App Logic: 
+                // CREDIT = Gave Goods (+) (Receivable Increase) -> Mapping to 'Debit' column
+                // DEBIT = Got Payment (-) (Receivable Decrease) -> Mapping to 'Credit' column
+                // Balance is running total of (CREDIT - DEBIT)
+
+                let debit = '';
+                let credit = '';
+
+                if (t.type === 'CREDIT') {
+                    debit = amount.toLocaleString();
+                    runningBalance += amount;
+                } else {
+                    credit = amount.toLocaleString();
+                    runningBalance -= amount;
+                }
+
+                const balanceStr = runningBalance >= 0 ?
+                    `${runningBalance.toLocaleString()} Dr` :
+                    `${Math.abs(runningBalance).toLocaleString()} Cr`;
+
+                tableRows.push([date, desc, debit, credit, balanceStr]);
             });
 
             autoTable(doc, {
@@ -143,9 +166,11 @@ const CustomerDetails = () => {
                     halign: 'center'
                 },
                 columnStyles: {
-                    0: { cellWidth: 30 }, // Date
-                    2: { textColor: [220, 38, 38], halign: 'right' }, // Debit Red
-                    3: { textColor: [22, 163, 74], halign: 'right' }  // Credit Green
+                    0: { cellWidth: 25 }, // Date
+                    1: { cellWidth: 60 }, // Description
+                    2: { halign: 'right' }, // Debit
+                    3: { halign: 'right' }, // Credit
+                    4: { halign: 'right', fontStyle: 'bold' } // Balance
                 },
                 alternateRowStyles: {
                     fillColor: [245, 247, 255]
@@ -153,6 +178,7 @@ const CustomerDetails = () => {
                 styles: {
                     lineColor: [220, 220, 230],
                     lineWidth: 0.1,
+                    fontSize: 9
                 }
             });
 
@@ -194,6 +220,21 @@ const CustomerDetails = () => {
         setNewTx({ amount: '', description: '', date: new Date().toISOString().split('T')[0], imageUrl: '' });
     };
 
+    const handleEditTxSubmit = (e) => {
+        e.preventDefault();
+        if (!editingTx.amount) return;
+
+        updateTransaction(editingTx.transactionId, id, null, null, {
+            amount: editingTx.amount,
+            description: editingTx.description,
+            date: editingTx.date,
+            type: editingTx.type
+        });
+
+        setShowEditTxModal(false);
+        setEditingTx(null);
+    };
+
     const handleEditSubmit = (e) => {
         e.preventDefault();
         updateCustomer(id, editData);
@@ -214,6 +255,11 @@ const CustomerDetails = () => {
         setTxType(type);
         setNewTx({ ...newTx, description: type === 'CREDIT' ? 'Goods Supplied' : 'Payment Received' });
         setShowTxModal(true);
+    };
+
+    const openEditTxModal = (tx) => {
+        setEditingTx({ ...tx });
+        setShowEditTxModal(true);
     };
 
     return (
@@ -286,16 +332,28 @@ const CustomerDetails = () => {
                                     <div className={t.type === 'CREDIT' ? 'text-red text-bold text-xl' : 'text-green text-bold text-xl'}>
                                         {t.type === 'CREDIT' ? '+' : '-'}₹{t.amount}
                                     </div>
-                                    <button
-                                        className="btn-icon"
-                                        style={{ padding: '4px', color: 'var(--text-light)', fontSize: '0.8rem' }}
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            deleteTransaction(t.transactionId, customer.customerId, t.type, t.amount);
-                                        }}
-                                    >
-                                        <Trash2 size={16} /> Delete
-                                    </button>
+                                    <div className="flex gap-2">
+                                        <button
+                                            className="btn-icon"
+                                            style={{ padding: '4px', color: 'var(--primary)', fontSize: '0.8rem' }}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                openEditTxModal(t);
+                                            }}
+                                        >
+                                            <Edit size={16} /> Edit
+                                        </button>
+                                        <button
+                                            className="btn-icon"
+                                            style={{ padding: '4px', color: 'var(--text-light)', fontSize: '0.8rem' }}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                deleteTransaction(t.transactionId, customer.customerId, t.type, t.amount);
+                                            }}
+                                        >
+                                            <Trash2 size={16} /> Delete
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -339,8 +397,6 @@ const CustomerDetails = () => {
                             <button onClick={() => setShowTxModal(false)} className="btn-icon"><X size={24} /></button>
                         </div>
 
-
-
                         <form onSubmit={handleTxSubmit} className="flex-col gap-4">
                             <div className="input-group">
                                 <label>Amount (₹)</label>
@@ -361,6 +417,43 @@ const CustomerDetails = () => {
                                 style={{ width: '100%', marginTop: '1rem', background: txType === 'CREDIT' ? 'var(--credit)' : 'var(--debit)', color: 'white' }}
                             >
                                 Save Entry
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Edit Transaction Modal */}
+            {showEditTxModal && editingTx && (
+                <div className="modal-overlay">
+                    <div className="modal-content animate-fade-in">
+                        <div className="flex-between" style={{ marginBottom: '1.5rem' }}>
+                            <h3 className="text-xl text-bold" style={{ color: editingTx.type === 'CREDIT' ? 'var(--credit)' : 'var(--debit)' }}>
+                                {editingTx.type === 'CREDIT' ? 'Edit Credit Entry' : 'Edit Debit Entry'}
+                            </h3>
+                            <button onClick={() => setShowEditTxModal(false)} className="btn-icon"><X size={24} /></button>
+                        </div>
+
+                        <form onSubmit={handleEditTxSubmit} className="flex-col gap-4">
+                            <div className="input-group">
+                                <label>Amount (₹)</label>
+                                <input required type="number" step="0.01" value={editingTx.amount} onChange={e => setEditingTx({ ...editingTx, amount: e.target.value })} autoFocus style={{ fontSize: '1.5rem', fontWeight: 'bold' }} placeholder="0.00" />
+                            </div>
+                            <div className="input-group">
+                                <label>Date</label>
+                                <input type="date" value={editingTx.date} onChange={e => setEditingTx({ ...editingTx, date: e.target.value })} />
+                            </div>
+                            <div className="input-group">
+                                <label>Description / Bill No.</label>
+                                <input value={editingTx.description} onChange={e => setEditingTx({ ...editingTx, description: e.target.value })} placeholder="e.g. Spare Parts Bill #101" />
+                            </div>
+
+                            <button
+                                type="submit"
+                                className="btn"
+                                style={{ width: '100%', marginTop: '1rem', background: editingTx.type === 'CREDIT' ? 'var(--credit)' : 'var(--debit)', color: 'white' }}
+                            >
+                                Update Entry
                             </button>
                         </form>
                     </div>
